@@ -20,8 +20,7 @@ There are no tests and no linter configured. `package.json` is vestigial — thi
 
 ### Deploy (server = `ssh sonushub`)
 
-- **Frontend only** (any change under `static/`): copy `static/` to `/www/wwwroot/map.nahdi.space/` (tar/rsync over ssh). No rebuild. **Always bump the SW cache version** (`kafilah-vN` in `sw.js`) so clients pick up the new shell on next load.
-- **Backend** (any change to `src/`): rsync source to a build dir on the server, build there with `bash -lc 'cargo build --release'` (cargo is only on the login-shell PATH: `/root/.cargo/bin`), copy the binary to `/opt/kafilah/kafilah`, `systemctl restart kafilah`.
+Use the script: `bash deploy/deploy.sh frontend|backend|all` (run from the repo root; Git Bash works). It tars `static/` to the docroot and/or builds on the server (`bash -lc` because cargo is only on the login-shell PATH: `/root/.cargo/bin`), swaps `/opt/kafilah/kafilah`, restarts the `kafilah` unit, and health-checks. **Always bump the SW cache version** (`kafilah-vN` in `sw.js`) with any frontend change so clients pick up the new shell on next load.
 - Runtime config lives in `/opt/kafilah/.env` (systemd `EnvironmentFile`); SQLite DB at `/opt/kafilah/data/kafilah.db`. Apache serves the docroot and proxies `/api` → `127.0.0.1:8795` (vhost: `/www/server/panel/vhost/apache/map.nahdi.space.conf`, reload with `/etc/init.d/httpd graceful`).
 
 ## Architecture
@@ -45,10 +44,11 @@ Key frontend conventions:
 
 All JSON, all behind `X-Kafilah-Key` (except `/api/health`):
 
-- `GET/POST /api/pins`, `POST /api/pins/stop` — location pins (upsert per device; `mode` = `once`|`live`; server stamps `updated_at`)
+- `GET/POST /api/pins`, `POST /api/pins/stop` — location pins (upsert per device; `mode` = `once`|`live`; server stamps `updated_at`). GET returns `avatar_hash`/`photo_hash` (FNV-1a of the blob), **not** the image data — keeps the 10 s poll at ~1 KB
+- `GET /api/photo?device=&kind=avatar|photo&v=<hash>&k=<key>` — decodes the stored data URL and serves raw image bytes with `Cache-Control: immutable`; accepts the key via `?k=` because `<img src>` can't send headers. Frontend builds these URLs with the `photoUrl()` helper
 - `GET /api/history?device=`, `GET /api/moments` — status-photo history (per device / global feed)
 - `POST /api/react`, `GET /api/reactions?target=` — emoji/text reactions on a status
-- `POST /api/dm`, `GET /api/dm?me=&peer=`, `GET /api/threads?me=` — 1-on-1 chat (`peer=__group__` for the group thread). A DM may carry status-reply context: `reply_photo` (thumbnail data URL, ≤ 300 KB, else silently dropped) + `reply_name`, rendered IG-style above the bubble
+- `POST /api/dm`, `GET /api/dm?me=&peer=&since=`, `GET /api/threads?me=` — 1-on-1 chat (`peer=__group__` for the group thread; `since` returns only messages with `created_at > since` — the 4 s chat poll is incremental). A DM may carry: status-reply context (`reply_photo` thumbnail + `reply_name`, rendered IG-style above the bubble), an inline `photo` (photo-only messages with empty text are valid), and a long-press quote (`quote_text`/`quote_name`). All image fields must be `data:image/` ≤ 300 KB or they're silently dropped
 - `POST /api/ping`, `GET /api/presence` — online presence (90 s window)
 
 Unread state (inbox badge, chat dots) is purely client-side via `localStorage` timestamps (`kafilah_chat_seen`, `kafilah_inbox_seen`) — the server stores no read state.
