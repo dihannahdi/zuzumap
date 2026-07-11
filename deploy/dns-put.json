@@ -1,0 +1,13 @@
+{
+  "overwrite": false,
+  "zone": [
+    {
+      "name": "map",
+      "type": "A",
+      "ttl": 300,
+      "records": [
+        { "content": "217.15.160.49" }
+      ]
+    }
+  ]
+}

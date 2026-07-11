@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+  <title>ZuzuMap</title>
+  <meta name="description" content="ZuzuMap — peta sahabat. Satu peta untuk kita yang tersebar di mana-mana." />
+  <meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="ZuzuMap" />
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+  <link rel="icon" href="/icons/logo.png" type="image/png" />
+  <link rel="stylesheet" href="/vendor/maplibre-gl.css" />
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <div id="map"></div>
+
+  <!-- Top bar -->
+  <header class="topbar">
+    <div class="brand">
+      <img class="brand-mark" src="/icons/logo.png" alt="" width="28" height="28" />
+      <div class="brand-text">
+        <strong>ZuzuMap</strong>
+        <small id="statusText">Posdim</small>
+      </div>
+    </div>
+    <div class="top-actions">
+      <button id="btnLocate" class="icon-btn" title="Temukan aku" aria-label="Temukan aku">
+        <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12 8a4 4 0 100 8 4 4 0 000-8zm0-6a1 1 0 011 1v1.06A8.01 8.01 0 0119.94 11H21a1 1 0 110 2h-1.06A8.01 8.01 0 0113 19.94V21a1 1 0 11-2 0v-1.06A8.01 8.01 0 014.06 13H3a1 1 0 110-2h1.06A8.01 8.01 0 0111 4.06V3a1 1 0 011-1zm0 5a5 5 0 100 10 5 5 0 000-10z"/></svg>
+      </button>
+      <button id="btnRefresh" class="icon-btn" title="Segarkan" aria-label="Segarkan">
+        <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12 6V3L8 7l4 4V8a5 5 0 11-5 5H5a7 7 0 107-7z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Live-sharing banner -->
+  <div id="liveBar" class="livebar" hidden>
+    <span class="livedot"></span>
+    <span id="liveBarText">Membagikan lokasi live…</span>
+    <button id="btnStopLive" class="livebar-stop">Berhenti</button>
+  </div>
+
+  <!-- Bottom sheet: list of friends -->
+  <section id="sheet" class="sheet" data-state="peek">
+    <div class="sheet-grabber" id="grabber"><span></span></div>
+    <div class="sheet-head">
+      <h2>Posdim</h2>
+      <span id="friendCount" class="pill">0</span>
+      <div class="sheet-head-actions">
+        <button id="btnMoments" class="chip-btn" title="Momen" aria-label="Momen">
+          <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M4 4h7v7H4V4zm9 0h7v7h-7V4zM4 13h7v7H4v-7zm9 0h7v7h-7v-7z"/></svg>
+        </button>
+        <button id="btnInbox" class="chip-btn" title="Kotak masuk" aria-label="Kotak masuk">
+          <svg viewBox="0 0 24 24" width="19" height="19"><path fill="currentColor" d="M4 4h16a1 1 0 011 1v14a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1zm1 3.5V18h14V7.5l-7 4.5-7-4.5zM6.4 6l5.6 3.6L17.6 6H6.4z"/></svg>
+          <span id="inboxBadge" class="chip-badge" hidden>0</span>
+        </button>
+        <button id="btnInvite" class="chip-btn" title="Undang teman" aria-label="Undang teman">
+          <svg viewBox="0 0 24 24" width="19" height="19"><path fill="currentColor" d="M12 3l4 4h-3v7h-2V7H8l4-4zm-7 8a1 1 0 011 1v6h12v-6a1 1 0 112 0v7a1 1 0 01-1 1H5a1 1 0 01-1-1v-7a1 1 0 011-1z"/></svg>
+        </button>
+        <button id="btnTheme" class="chip-btn" title="Ganti tema" aria-label="Ganti tema">🌗</button>
+      </div>
+    </div>
+    <div id="friendList" class="friend-list"></div>
+  </section>
+
+  <!-- Share FAB -->
+  <button id="fab" class="fab">
+    <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12 2a1 1 0 01.7.29l5 5a1 1 0 11-1.4 1.42L13 5.4V15a1 1 0 11-2 0V5.41L7.71 8.71A1 1 0 116.3 7.3l5-5A1 1 0 0112 2zM5 14a1 1 0 011 1v4h12v-4a1 1 0 112 0v5a1 1 0 01-1 1H4a1 1 0 01-1-1v-5a1 1 0 011-1z"/></svg>
+    <span>Bagikan lokasiku</span>
+  </button>
+
+  <!-- Share modal -->
+  <div id="shareModal" class="modal" hidden>
+    <div class="modal-card">
+      <div class="modal-grabber"><span></span></div>
+      <h3>Bagikan lokasimu</h3>
+      <div class="field">
+        <span>Foto profil</span>
+        <div class="avatar-edit">
+          <div id="avatarPreview" class="avatar-preview">📍</div>
+          <div class="avatar-edit-actions">
+            <button type="button" id="btnPickPhoto" class="btn ghost small">Pilih foto</button>
+            <button type="button" id="btnClearPhoto" class="btn ghost small" hidden>Hapus foto</button>
+          </div>
+          <input id="filePhoto" type="file" accept="image/*" hidden />
+        </div>
+      </div>
+      <div class="field">
+        <span>Foto status — momen "lagi di mana/ngapain" (opsional)</span>
+        <div class="avatar-edit">
+          <div id="statusPreview" class="status-preview"><span>Tambah foto</span></div>
+          <div class="avatar-edit-actions">
+            <button type="button" id="btnCamStatus" class="btn ghost small">📷 Kamera</button>
+            <button type="button" id="btnPickStatus" class="btn ghost small">Galeri</button>
+            <button type="button" id="btnClearStatus" class="btn ghost small" hidden>Hapus</button>
+          </div>
+          <input id="fileStatus" type="file" accept="image/*" hidden />
+        </div>
+      </div>
+      <label class="field">
+        <span>Namamu</span>
+        <input id="inpName" type="text" maxlength="40" placeholder="mis. Azuzu" autocomplete="off" />
+      </label>
+      <div class="field">
+        <span>Ikon</span>
+        <div id="emojiPicker" class="chips"></div>
+      </div>
+      <div class="field">
+        <span>Warna</span>
+        <div id="colorPicker" class="chips colors"></div>
+      </div>
+      <div class="field">
+        <span>Catatan (opsional)</span>
+        <input id="inpNote" type="text" maxlength="140" placeholder="mis. lagi di posko KKN" autocomplete="off" />
+      </div>
+      <div class="seg">
+        <button data-mode="once" class="seg-btn is-active">Sekali saja</button>
+        <button data-mode="live" class="seg-btn">Live</button>
+      </div>
+      <p class="hint" id="modeHint">Kirim lokasimu sekarang, satu kali, lengkap dengan waktunya.</p>
+      <label class="opt-row"><input type="checkbox" id="optApprox" /><span>Lokasi perkiraan (samarkan ±1 km)</span></label>
+      <label class="opt-row" id="liveDurRow" hidden><span>Berhenti live otomatis</span>
+        <select id="optLiveDur">
+          <option value="1">setelah 1 jam</option>
+          <option value="8">setelah 8 jam</option>
+          <option value="0">tidak</option>
+        </select>
+      </label>
+      <div class="modal-actions">
+        <button id="btnCancelShare" class="btn ghost">Batal</button>
+        <button id="btnConfirmShare" class="btn primary">Bagikan</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Friend detail (Locket-style) -->
+  <div id="detailModal" class="modal detail" hidden>
+    <div class="detail-card">
+      <div class="modal-grabber"><span></span></div>
+      <div id="detailPhoto" class="detail-photo"><img id="detailPhotoImg" alt="" /><span id="detailPhotoEmoji"></span></div>
+      <div class="detail-body">
+        <div class="detail-head">
+          <div id="detailChip" class="detail-chip"></div>
+          <div class="detail-headtext">
+            <div class="detail-name"><span id="detailName"></span> <span id="detailBadge"></span></div>
+            <div id="detailNote" class="detail-note"></div>
+          </div>
+        </div>
+        <div class="detail-meta">
+          <div class="detail-row">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2a7 7 0 00-7 7c0 5 7 13 7 13s7-8 7-13a7 7 0 00-7-7zm0 9.5A2.5 2.5 0 1112 6.5a2.5 2.5 0 010 5z"/></svg>
+            <span id="detailPlace">…</span>
+          </div>
+          <div class="detail-row">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2a10 10 0 100 20 10 10 0 000-20zm.9 4h-1.8v6.2l4.6 2.8.9-1.5-3.7-2.2z"/></svg>
+            <span id="detailTime"></span>
+          </div>
+          <div class="detail-row" id="detailDistRow" hidden>
+            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2 2 7l10 5 10-5zm0 7.2L5.7 6 12 3.1 18.3 6zM2 12l10 5 10-5-2.2-1.1L12 14.6 4.2 10.9zm0 5 10 5 10-5-2.2-1.1L12 19.6 4.2 15.9z"/></svg>
+            <span id="detailDist"></span>
+          </div>
+        </div>
+        <div class="reply-wrap">
+          <div id="replyEmojis" class="reply-emojis"></div>
+          <div class="reply-input">
+            <input id="replyText" type="text" maxlength="1000" placeholder="Kirim pesan ke chat…" autocomplete="off" />
+            <button id="btnReplySend" class="btn primary small">Kirim</button>
+          </div>
+          <div id="replyList" class="reply-list"></div>
+        </div>
+        <button id="btnChat" class="btn primary block" hidden>💬 Chat</button>
+        <button id="btnHistory" class="btn ghost block">Riwayat foto</button>
+        <div class="detail-actions">
+          <button id="btnDetailFly" class="btn ghost">Lihat di peta</button>
+          <button id="btnDetailClose" class="btn primary">Tutup</button>
+        </div>
+        <button id="btnDetailDelete" class="btn danger block" hidden>Hapus lokasiku</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Fullscreen photo viewer -->
+  <div id="photoViewer" class="photo-viewer" hidden>
+    <img id="photoViewerImg" alt="Foto" />
+  </div>
+
+  <!-- Momen (status photo feed) -->
+  <div id="momentsModal" class="modal" hidden>
+    <div class="modal-card">
+      <div class="modal-grabber"><span></span></div>
+      <h3>Momen</h3>
+      <div id="momentsFeed" class="moments-feed"></div>
+      <div class="modal-actions"><button id="btnMomentsClose" class="btn primary block">Tutup</button></div>
+    </div>
+  </div>
+
+  <!-- Chat / DM thread -->
+  <div id="chatModal" class="modal chat" hidden>
+    <div class="chat-card">
+      <div class="chat-head">
+        <button id="btnChatBack" class="chat-back" aria-label="Kembali">‹</button>
+        <div id="chatPeerName" class="chat-peer"></div>
+      </div>
+      <div id="chatBody" class="chat-body"></div>
+      <div class="chat-input">
+        <input id="chatText" type="text" maxlength="1000" placeholder="Tulis pesan…" autocomplete="off" />
+        <button id="btnChatSend" class="btn primary small">Kirim</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Inbox (replies to me) -->
+  <div id="inboxModal" class="modal" hidden>
+    <div class="modal-card">
+      <div class="modal-grabber"><span></span></div>
+      <h3>Kotak masuk</h3>
+      <div id="inboxList" class="inbox-list"></div>
+      <div class="modal-actions"><button id="btnInboxClose" class="btn primary block">Tutup</button></div>
+    </div>
+  </div>
+
+  <!-- Photo history gallery -->
+  <div id="historyModal" class="modal" hidden>
+    <div class="modal-card">
+      <div class="modal-grabber"><span></span></div>
+      <h3 id="historyTitle">Riwayat foto</h3>
+      <div id="historyGrid" class="history-grid"></div>
+      <div class="modal-actions"><button id="btnHistoryClose" class="btn primary block">Tutup</button></div>
+    </div>
+  </div>
+
+  <!-- BeReal/Locket-style camera -->
+  <div id="cameraModal" class="camera" hidden>
+    <button id="btnCamClose" class="cam-x" aria-label="Tutup">✕</button>
+    <div class="cam-hint" id="camHint">Ketuk untuk ambil — belakang lalu depan</div>
+    <div class="cam-stage">
+      <div class="cam-frame">
+        <video id="camVideo" playsinline autoplay muted></video>
+        <img id="camPreview" class="cam-preview" alt="" hidden />
+      </div>
+    </div>
+    <div class="cam-controls" id="camShootRow">
+      <div id="camThumb" class="cam-thumb"></div>
+      <button id="btnCamShoot" class="cam-shutter" aria-label="Ambil foto"></button>
+      <button id="btnCamFlip" class="cam-flip" aria-label="Balik kamera">
+        <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 5V2L8 6l4 4V7a5 5 0 015 5h2a7 7 0 00-7-7zm0 14v3l4-4-4-4v3a5 5 0 01-5-5H5a7 7 0 007 7z"/></svg>
+      </button>
+    </div>
+    <div class="cam-controls" id="camPreviewRow" hidden>
+      <button id="btnCamRetake" class="cam-btn">Ulangi</button>
+      <button id="btnCamUse" class="cam-use">Pakai foto</button>
+    </div>
+  </div>
+
+  <!-- floating emoji reactions -->
+  <div id="emojiFloat" class="emoji-float" aria-hidden="true"></div>
+
+  <!-- Key gate -->
+  <div id="gate" class="gate" hidden>
+    <div class="gate-card">
+      <img class="brand-mark big" src="/icons/logo.png" alt="" width="72" height="72" />
+      <h3>ZuzuMap</h3>
+      <p>Masukkan kunci untuk bergabung dengan peta ZuzuMap.</p>
+      <input id="inpKey" type="text" placeholder="Kunci ZuzuMap" autocomplete="off" />
+      <button id="btnEnter" class="btn primary block">Masuk</button>
+      <small id="gateErr" class="gate-err" hidden>Kunci salah. Coba lagi.</small>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="/vendor/maplibre-gl.js"></script>
+  <script src="/vendor/gsap.min.js"></script>
+  <script src="/vendor/Draggable.min.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

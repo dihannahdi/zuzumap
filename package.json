@@ -1,0 +1,13 @@
+{
+  "name": "map",
+  "version": "1.0.0",
+  "description": "A Find My–style, full-screen map where a circle of friends share their location — one-time (with the moment it was shared) or live. Built for friends scattered across the world on KKN. One shared key protects the whole circle; no accounts.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
+}

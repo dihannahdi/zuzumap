@@ -1,0 +1,16 @@
+[Unit]
+Description=Kafilah location map API
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/kafilah
+EnvironmentFile=/opt/kafilah/.env
+ExecStart=/opt/kafilah/kafilah
+Restart=always
+RestartSec=3
+User=root
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
