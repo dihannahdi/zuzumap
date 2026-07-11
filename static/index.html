@@ -204,10 +204,17 @@
     <div class="chat-card">
       <div class="chat-head">
         <button id="btnChatBack" class="chat-back" aria-label="Kembali">‹</button>
+        <span id="chatDot" class="online-dot" hidden></span>
         <div id="chatPeerName" class="chat-peer"></div>
       </div>
       <div id="chatBody" class="chat-body"></div>
+      <div id="chatQuoteBar" class="chat-quote-bar" hidden>
+        <div class="cq-text"><b id="cqName"></b><span id="cqSnippet"></span></div>
+        <button id="btnQuoteCancel" aria-label="Batal">✕</button>
+      </div>
       <div class="chat-input">
+        <button id="btnChatPhoto" class="chat-photo-btn" title="Kirim foto" aria-label="Kirim foto">📷</button>
+        <input id="fileChatPhoto" type="file" accept="image/*" hidden />
         <input id="chatText" type="text" maxlength="1000" placeholder="Tulis pesan…" autocomplete="off" />
         <button id="btnChatSend" class="btn primary small">Kirim</button>
       </div>

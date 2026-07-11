@@ -13,10 +13,12 @@ use std::{
 
 use axum::{
     extract::{Query, State},
-    http::{HeaderMap, StatusCode},
+    http::{header, HeaderMap, StatusCode},
+    response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
+use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tower_http::services::{ServeDir, ServeFile};
@@ -39,8 +41,8 @@ struct Pin {
     mode: String,
     note: Option<String>,
     updated_at: i64,
-    avatar: Option<String>,
-    photo: Option<String>,
+    avatar_hash: Option<String>,
+    photo_hash: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -66,6 +68,17 @@ struct StopIn {
 #[derive(Deserialize)]
 struct DeviceQ {
     device: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PhotoQ {
+    device: Option<String>,
+    kind: Option<String>,
+    // Cache-buster only, used by <img src> to force a refetch when the hash
+    // changes; the value itself is never checked.
+    #[allow(dead_code)]
+    v: Option<String>,
+    k: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -109,12 +122,19 @@ struct DmIn {
     // the photo being replied to (data URL) + whose status it was.
     reply_photo: Option<String>,
     reply_name: Option<String>,
+    // Optional inline chat photo (data URL thumbnail) — a photo-only message
+    // (empty text) is valid as long as a photo is attached.
+    photo: Option<String>,
+    // Optional quoted-reply context from a long-press on another message.
+    quote_text: Option<String>,
+    quote_name: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct DmThreadQ {
     me: Option<String>,
     peer: Option<String>,
+    since: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -130,6 +150,9 @@ struct Msg {
     created_at: i64,
     reply_photo: Option<String>,
     reply_name: Option<String>,
+    photo: Option<String>,
+    quote_text: Option<String>,
+    quote_name: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -176,12 +199,33 @@ fn clamp_str(s: &str, max: usize) -> String {
     s.trim().chars().take(max).collect()
 }
 
+/// Cheap, non-cryptographic content hash used only as a cache-busting id for
+/// avatar/photo blobs (so /api/pins can ship a hash instead of the blob).
+fn fnv1a64(s: &str) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.as_bytes() { h ^= *b as u64; h = h.wrapping_mul(0x100000001b3); }
+    format!("{h:016x}")
+}
+
 fn check_key(headers: &HeaderMap, state: &AppState) -> Result<(), StatusCode> {
     let got = headers
         .get("x-kafilah-key")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     if !state.key.is_empty() && got == state.key {
+        Ok(())
+    } else {
+        Err(StatusCode::UNAUTHORIZED)
+    }
+}
+
+/// Same as `check_key`, but also accepts the key as a `k` query param — needed
+/// for endpoints hit via `<img src>`, which can't send custom headers.
+fn check_key_or_param(headers: &HeaderMap, state: &AppState, k: Option<&str>) -> Result<(), StatusCode> {
+    if check_key(headers, state).is_ok() {
+        return Ok(());
+    }
+    if !state.key.is_empty() && k.unwrap_or("") == state.key {
         Ok(())
     } else {
         Err(StatusCode::UNAUTHORIZED)
@@ -200,7 +244,7 @@ async fn get_pins(
     let db = st.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut stmt = db
         .prepare(
-            "SELECT device_id,name,emoji,color,lat,lng,accuracy,mode,note,updated_at,avatar,photo \
+            "SELECT device_id,name,emoji,color,lat,lng,accuracy,mode,note,updated_at,avatar_hash,photo_hash \
              FROM pins WHERE hidden=0 ORDER BY updated_at DESC LIMIT 500",
         )
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -217,8 +261,8 @@ async fn get_pins(
                 mode: r.get(7)?,
                 note: r.get(8)?,
                 updated_at: r.get(9)?,
-                avatar: r.get(10)?,
-                photo: r.get(11)?,
+                avatar_hash: r.get(10)?,
+                photo_hash: r.get(11)?,
             })
         })
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -286,17 +330,20 @@ async fn post_pin(
         .as_deref()
         .map(|s| s.trim().to_string())
         .filter(|s| s.starts_with("data:image/") && s.len() <= 1_600_000);
+    let avatar_hash = avatar.as_deref().map(fnv1a64);
+    let photo_hash = photo.as_deref().map(fnv1a64);
 
     let db = st.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     db.execute(
-        "INSERT INTO pins (device_id,name,emoji,color,lat,lng,accuracy,mode,note,updated_at,avatar,photo,hidden) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,0) \
+        "INSERT INTO pins (device_id,name,emoji,color,lat,lng,accuracy,mode,note,updated_at,avatar,photo,avatar_hash,photo_hash,hidden) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,0) \
          ON CONFLICT(device_id) DO UPDATE SET \
            name=excluded.name,emoji=excluded.emoji,color=excluded.color, \
            lat=excluded.lat,lng=excluded.lng,accuracy=excluded.accuracy, \
-           mode=excluded.mode,note=excluded.note,updated_at=excluded.updated_at,avatar=excluded.avatar,photo=excluded.photo,hidden=0",
+           mode=excluded.mode,note=excluded.note,updated_at=excluded.updated_at,avatar=excluded.avatar,photo=excluded.photo, \
+           avatar_hash=excluded.avatar_hash,photo_hash=excluded.photo_hash,hidden=0",
         rusqlite::params![
-            device_id, name, emoji, color, inp.lat, inp.lng, accuracy, mode, note, now_ms(), avatar, photo
+            device_id, name, emoji, color, inp.lat, inp.lng, accuracy, mode, note, now_ms(), avatar, photo, avatar_hash, photo_hash
         ],
     )
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -357,6 +404,45 @@ async fn get_history(
         })
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(rows.filter_map(|r| r.ok()).collect()))
+}
+
+/// Serves a single avatar/photo blob out of `pins` as raw bytes (not JSON), so
+/// it can be used directly as an `<img src>` and cached hard by the browser.
+/// `/api/pins` only ships a content hash now — this is where the bytes live.
+async fn get_photo(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<PhotoQ>,
+) -> Result<impl IntoResponse, StatusCode> {
+    check_key_or_param(&headers, &st, q.k.as_deref())?;
+    let device = clamp_str(q.device.as_deref().unwrap_or(""), 64);
+    if device.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let sql = match q.kind.as_deref().unwrap_or("") {
+        "avatar" => "SELECT avatar FROM pins WHERE device_id=?1",
+        "photo" => "SELECT photo FROM pins WHERE device_id=?1",
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
+    let db = st.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let data_url: Option<String> = db
+        .query_row(sql, [&device], |r| r.get(0))
+        .optional()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .flatten();
+    let data_url = data_url.ok_or(StatusCode::NOT_FOUND)?;
+    // Parse "data:<mime>;base64,<payload>".
+    let rest = data_url.strip_prefix("data:").ok_or(StatusCode::NOT_FOUND)?;
+    let (meta, payload) = rest.split_once(',').ok_or(StatusCode::NOT_FOUND)?;
+    let mime = meta.strip_suffix(";base64").ok_or(StatusCode::NOT_FOUND)?.to_string();
+    let bytes = B64.decode(payload).map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, mime),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string()),
+        ],
+        bytes,
+    ))
 }
 
 async fn react(
@@ -456,7 +542,15 @@ async fn send_dm(
         return Err(StatusCode::BAD_REQUEST);
     }
     let text = clamp_str(&inp.text, 1000);
-    if text.is_empty() {
+    // Invalid/oversized reply/photo/quote context is dropped silently; the
+    // message still sends. A photo-only message (empty text) is valid as
+    // long as a photo is attached.
+    let photo = inp
+        .photo
+        .as_deref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| s.starts_with("data:image/") && s.len() <= 300_000);
+    if text.is_empty() && photo.is_none() {
         return Err(StatusCode::BAD_REQUEST);
     }
     let name = inp
@@ -464,7 +558,6 @@ async fn send_dm(
         .as_deref()
         .map(|s| clamp_str(s, 40))
         .filter(|s| !s.is_empty());
-    // Invalid/oversized reply context is dropped silently; the message still sends.
     let reply_photo = inp
         .reply_photo
         .as_deref()
@@ -475,11 +568,21 @@ async fn send_dm(
         .as_deref()
         .map(|s| clamp_str(s, 40))
         .filter(|s| !s.is_empty());
+    let quote_text = inp
+        .quote_text
+        .as_deref()
+        .map(|s| clamp_str(s, 140))
+        .filter(|s| !s.is_empty());
+    let quote_name = inp
+        .quote_name
+        .as_deref()
+        .map(|s| clamp_str(s, 40))
+        .filter(|s| !s.is_empty());
     let db = st.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     db.execute(
-        "INSERT INTO messages (from_device,to_device,from_name,text,created_at,reply_photo,reply_name) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7)",
-        rusqlite::params![from, to, name, text, now_ms(), reply_photo, reply_name],
+        "INSERT INTO messages (from_device,to_device,from_name,text,created_at,reply_photo,reply_name,photo,quote_text,quote_name) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        rusqlite::params![from, to, name, text, now_ms(), reply_photo, reply_name, photo, quote_text, quote_name],
     )
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(StatusCode::NO_CONTENT)
@@ -496,32 +599,33 @@ async fn get_dm(
     if me.is_empty() || peer.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
+    let since = q.since.unwrap_or(0);
     let db = st.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     // Group chat: everyone shares the "__group__" thread.
     if peer == "__group__" {
         let mut stmt = db
             .prepare(
-                "SELECT from_device,from_name,text,created_at,reply_photo,reply_name FROM messages \
-                 WHERE to_device='__group__' ORDER BY created_at ASC LIMIT 400",
+                "SELECT from_device,from_name,text,created_at,reply_photo,reply_name,photo,quote_text,quote_name FROM messages \
+                 WHERE to_device='__group__' AND created_at > ?1 ORDER BY created_at ASC LIMIT 400",
             )
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         let rows = stmt
-            .query_map([], |r| {
-                Ok(Msg { from_device: r.get(0)?, from_name: r.get(1)?, text: r.get(2)?, created_at: r.get(3)?, reply_photo: r.get(4)?, reply_name: r.get(5)? })
+            .query_map([since], |r| {
+                Ok(Msg { from_device: r.get(0)?, from_name: r.get(1)?, text: r.get(2)?, created_at: r.get(3)?, reply_photo: r.get(4)?, reply_name: r.get(5)?, photo: r.get(6)?, quote_text: r.get(7)?, quote_name: r.get(8)? })
             })
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         return Ok(Json(rows.filter_map(|r| r.ok()).collect()));
     }
     let mut stmt = db
         .prepare(
-            "SELECT from_device,from_name,text,created_at,reply_photo,reply_name FROM messages \
-             WHERE (from_device=?1 AND to_device=?2) OR (from_device=?2 AND to_device=?1) \
+            "SELECT from_device,from_name,text,created_at,reply_photo,reply_name,photo,quote_text,quote_name FROM messages \
+             WHERE ((from_device=?1 AND to_device=?2) OR (from_device=?2 AND to_device=?1)) AND created_at > ?3 \
              ORDER BY created_at ASC LIMIT 300",
         )
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let rows = stmt
-        .query_map(rusqlite::params![me, peer], |r| {
-            Ok(Msg { from_device: r.get(0)?, from_name: r.get(1)?, text: r.get(2)?, created_at: r.get(3)?, reply_photo: r.get(4)?, reply_name: r.get(5)? })
+        .query_map(rusqlite::params![me, peer, since], |r| {
+            Ok(Msg { from_device: r.get(0)?, from_name: r.get(1)?, text: r.get(2)?, created_at: r.get(3)?, reply_photo: r.get(4)?, reply_name: r.get(5)?, photo: r.get(6)?, quote_text: r.get(7)?, quote_name: r.get(8)? })
         })
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(rows.filter_map(|r| r.ok()).collect()))
@@ -685,6 +789,8 @@ async fn main() {
             updated_at INTEGER NOT NULL,\
             avatar     TEXT,\
             photo      TEXT,\
+            avatar_hash TEXT,\
+            photo_hash  TEXT,\
             hidden     INTEGER NOT NULL DEFAULT 0\
         );",
     )
@@ -692,6 +798,8 @@ async fn main() {
     // Idempotent migrations for DBs created before these columns existed.
     let _ = conn.execute("ALTER TABLE pins ADD COLUMN avatar TEXT", []);
     let _ = conn.execute("ALTER TABLE pins ADD COLUMN photo TEXT", []);
+    let _ = conn.execute("ALTER TABLE pins ADD COLUMN avatar_hash TEXT", []);
+    let _ = conn.execute("ALTER TABLE pins ADD COLUMN photo_hash TEXT", []);
 
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS photo_history (\
@@ -722,7 +830,10 @@ async fn main() {
             text TEXT NOT NULL,\
             created_at INTEGER NOT NULL,\
             reply_photo TEXT,\
-            reply_name TEXT\
+            reply_name TEXT,\
+            photo TEXT,\
+            quote_text TEXT,\
+            quote_name TEXT\
         );\
         CREATE INDEX IF NOT EXISTS idx_msg_pair ON messages(from_device, to_device, created_at);\
         CREATE INDEX IF NOT EXISTS idx_msg_to ON messages(to_device, created_at);\
@@ -736,6 +847,35 @@ async fn main() {
     // Idempotent migrations for DBs created before these columns existed.
     let _ = conn.execute("ALTER TABLE messages ADD COLUMN reply_photo TEXT", []);
     let _ = conn.execute("ALTER TABLE messages ADD COLUMN reply_name TEXT", []);
+    let _ = conn.execute("ALTER TABLE messages ADD COLUMN photo TEXT", []);
+    let _ = conn.execute("ALTER TABLE messages ADD COLUMN quote_text TEXT", []);
+    let _ = conn.execute("ALTER TABLE messages ADD COLUMN quote_name TEXT", []);
+
+    // Backfill avatar_hash/photo_hash for rows written before these columns
+    // existed, so /api/photo has a hash to look up right away.
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT device_id, avatar, photo FROM pins \
+                 WHERE (avatar IS NOT NULL AND avatar_hash IS NULL) \
+                    OR (photo IS NOT NULL AND photo_hash IS NULL)",
+            )
+            .expect("prepare backfill select");
+        let rows: Vec<(String, Option<String>, Option<String>)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .expect("query backfill rows")
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+        for (device_id, avatar, photo) in rows {
+            let avatar_hash = avatar.as_deref().map(fnv1a64);
+            let photo_hash = photo.as_deref().map(fnv1a64);
+            let _ = conn.execute(
+                "UPDATE pins SET avatar_hash=?2, photo_hash=?3 WHERE device_id=?1",
+                rusqlite::params![device_id, avatar_hash, photo_hash],
+            );
+        }
+    }
 
     let state = AppState {
         db: Arc::new(Mutex::new(conn)),
@@ -750,6 +890,7 @@ async fn main() {
         .route("/api/pins", get(get_pins).post(post_pin))
         .route("/api/pins/stop", post(stop_pin))
         .route("/api/history", get(get_history))
+        .route("/api/photo", get(get_photo))
         .route("/api/react", post(react))
         .route("/api/reactions", get(get_reactions))
         .route("/api/dm", get(get_dm).post(send_dm))

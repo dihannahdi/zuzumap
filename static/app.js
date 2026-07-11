@@ -37,6 +37,8 @@
   let myThreads = [];
   let chatPeer = null;
   let chatTimer = null;
+  let chatMsgs = [];
+  let chatQuote = null;
   let groupLast = null;
   let curApprox = false;
   let liveStopTimer = null;
@@ -161,10 +163,19 @@
     matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (currentTheme() === 'auto') applyTheme(); });
   }
 
+  // /api/pins ships only content hashes now (no inline data URLs) — build the
+  // cacheable image URL for a pin's avatar/status photo from its hash.
+  function photoUrl(pin, kind) {
+    const h = kind === 'avatar' ? pin.avatar_hash : pin.photo_hash;
+    if (!h) return '';
+    return '/api/photo?device=' + encodeURIComponent(pin.device_id) + '&kind=' + kind + '&v=' + h + '&k=' + encodeURIComponent(getKey());
+  }
+
   // Set a bubble/avatar element to show a photo (if any) or the emoji.
   function applyBubble(el, pin) {
     if (!el) return;
-    if (pin.avatar) { el.style.backgroundImage = `url('${pin.avatar}')`; el.textContent = ''; }
+    const av = photoUrl(pin, 'avatar');
+    if (av) { el.style.backgroundImage = `url('${av}')`; el.textContent = ''; }
     else { el.style.backgroundImage = ''; el.textContent = pin.emoji || '📍'; }
   }
 
@@ -283,7 +294,7 @@
     const isLive = pin.mode === 'live' && now - pin.updated_at <= STALE_MS;
 
     // Big image: status/moment photo first, else profile photo, else emoji block.
-    const big = pin.photo || pin.avatar || '';
+    const big = photoUrl(pin, 'photo') || photoUrl(pin, 'avatar');
     const photo = $('detailPhoto');
     const bigImg = $('detailPhotoImg');
     if (big) {
@@ -300,7 +311,8 @@
 
     const chip = $('detailChip');
     chip.style.setProperty('--pin', pin.color || '#0A84FF');
-    if (pin.avatar) { chip.style.backgroundImage = `url('${pin.avatar}')`; chip.textContent = ''; }
+    const chipAv = photoUrl(pin, 'avatar');
+    if (chipAv) { chip.style.backgroundImage = `url('${chipAv}')`; chip.textContent = ''; }
     else { chip.style.backgroundImage = ''; chip.textContent = pin.emoji || '📍'; }
 
     $('detailName').textContent = pin.name + (pin.device_id === deviceId ? ' (kamu)' : '');
@@ -366,7 +378,7 @@
   }
 
   // Fullscreen photo viewer
-  function currentBig() { const p = currentDetailPin; return p && (p.photo || p.avatar); }
+  function currentBig() { const p = currentDetailPin; return p && (photoUrl(p, 'photo') || photoUrl(p, 'avatar')); }
   function openViewer() { const img = currentBig(); if (!img) return; $('photoViewerImg').src = img; $('photoViewer').hidden = false; }
   function updateViewer() { if ($('photoViewer').hidden) return; const img = currentBig(); if (img) $('photoViewerImg').src = img; else closeViewer(); }
   function closeViewer() { $('photoViewer').hidden = true; $('photoViewerImg').removeAttribute('src'); }
@@ -472,7 +484,7 @@
     $('replyText').value = '';
     const body = { from_device: deviceId, to_device: reactTarget, from_name: localStorage.getItem(LS.name) || 'Teman', text };
     const pin = currentDetailPin;
-    const src = pin && pin.device_id === reactTarget ? (pin.photo || pin.avatar) : '';
+    const src = pin && pin.device_id === reactTarget ? (photoUrl(pin, 'photo') || photoUrl(pin, 'avatar')) : '';
     if (src) {
       const thumb = await shrinkDataUrl(src, 480, 0.72);
       if (thumb && thumb.length <= 300000) { body.reply_photo = thumb; body.reply_name = pin.name || 'Teman'; }
@@ -551,7 +563,7 @@
     {
       const grow = document.createElement('div'); grow.className = 'inbox-item';
       const gunread = groupLast && groupLast.from_device !== deviceId && groupLast.created_at > getChatSeen('__group__');
-      const prev = groupLast ? escapeHtml((groupLast.from_name || 'Teman') + ': ' + groupLast.text) + ' · ' + relTime(groupLast.created_at, now) : 'Obrolan bareng semua anggota';
+      const prev = groupLast ? escapeHtml((groupLast.from_name || 'Teman') + ': ' + (groupLast.text || '📷 Foto')) + ' · ' + relTime(groupLast.created_at, now) : 'Obrolan bareng semua anggota';
       grow.innerHTML = '<div class="ic">👥</div><div class="tx"><b>Grup Posdim' + (gunread ? '<span class="dot"></span>' : '') + '</b><div>' + prev + '</div></div>';
       grow.onclick = () => { animateClose($('inboxModal')); openChat('__group__', 'Grup Posdim'); };
       el.appendChild(grow);
@@ -563,7 +575,7 @@
         const unread = !t.mine && t.created_at > getChatSeen(t.peer);
         const pname = t.name || (pins.find((p) => p.device_id === t.peer) || {}).name || 'Teman';
         row.innerHTML = '<div class="ic">💬</div><div class="tx"><b>' + escapeHtml(pname) + (unread ? '<span class="dot"></span>' : '') +
-          '</b><div>' + (t.mine ? 'Kamu: ' : '') + escapeHtml(t.text) + ' · ' + relTime(t.created_at, now) + '</div></div>';
+          '</b><div>' + (t.mine ? 'Kamu: ' : '') + escapeHtml(t.text || '📷 Foto') + ' · ' + relTime(t.created_at, now) + '</div></div>';
         row.onclick = () => { animateClose($('inboxModal')); openChat(t.peer, pname); };
         el.appendChild(row);
       });
@@ -589,6 +601,37 @@
   function getChatSeen(peer) { return chatSeenMap()[peer] || 0; }
   function setChatSeen(peer, ts) { const m = chatSeenMap(); if (!(m[peer] >= ts)) { m[peer] = ts; localStorage.setItem('kafilah_chat_seen', JSON.stringify(m)); } }
   function scrollChatBottom() { const b = $('chatBody'); b.scrollTop = b.scrollHeight; }
+
+  // Long-press (450ms, cancelled by release or >10px movement) — used to pick
+  // a message to quote-reply to. Also swallows the native context menu.
+  function attachLongPress(el, cb) {
+    let timer = null, sx = 0, sy = 0;
+    const clear = () => { if (timer) { clearTimeout(timer); timer = null; } };
+    el.addEventListener('pointerdown', (e) => {
+      sx = e.clientX; sy = e.clientY;
+      clear();
+      timer = setTimeout(() => { timer = null; cb(); }, 450);
+    });
+    el.addEventListener('pointermove', (e) => {
+      if (!timer) return;
+      if (Math.hypot(e.clientX - sx, e.clientY - sy) > 10) clear();
+    });
+    el.addEventListener('pointerup', clear);
+    el.addEventListener('pointercancel', clear);
+    el.addEventListener('contextmenu', (e) => e.preventDefault());
+  }
+  function showQuoteBar() {
+    if (!chatQuote) { hideQuoteBar(); return; }
+    $('cqName').textContent = chatQuote.name;
+    $('cqSnippet').textContent = chatQuote.text.slice(0, 80);
+    $('chatQuoteBar').hidden = false;
+    $('chatText').focus();
+  }
+  function hideQuoteBar() { $('chatQuoteBar').hidden = true; }
+  function updateChatDot() {
+    const dot = $('chatDot'); if (!dot) return;
+    dot.hidden = !chatPeer || chatPeer === '__group__' || !isOnline(chatPeer);
+  }
   function renderChat(msgs) {
     const body = $('chatBody');
     const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
@@ -600,8 +643,15 @@
       const mine = m.from_device === deviceId;
       const side = mine ? 'me' : 'them';
       const sender = (isGroup && !mine) ? '<span class="chat-sender">' + escapeHtml(m.from_name || 'Teman') + '</span>' : '';
-      const bubble = sender + escapeHtml(m.text) + '<span class="chat-time">' + relTime(m.created_at, now) + '</span>';
+      const quoteHtml = m.quote_text
+        ? '<div class="chat-quote"><b>' + escapeHtml(m.quote_name || 'Teman') + '</b><span>' + escapeHtml(m.quote_text) + '</span></div>'
+        : '';
+      const hasPhoto = m.photo && String(m.photo).indexOf('data:image/') === 0;
+      const photoHtml = hasPhoto ? '<img class="chat-photo" alt="">' : '';
+      const textHtml = m.text ? escapeHtml(m.text) : '';
+      const bubble = sender + quoteHtml + photoHtml + textHtml + '<span class="chat-time">' + relTime(m.created_at, now) + '</span>';
       const hasReply = m.reply_photo && String(m.reply_photo).indexOf('data:image/') === 0;
+      let bubbleEl;
       if (hasReply) {
         // IG-style: the replied-to status photo sits above the reply bubble.
         const wrap = document.createElement('div');
@@ -614,50 +664,80 @@
         const img = wrap.querySelector('.chat-reply img');
         img.src = m.reply_photo;
         img.onclick = () => { $('photoViewerImg').src = m.reply_photo; $('photoViewer').hidden = false; };
+        bubbleEl = wrap.querySelector('.chat-msg');
         body.appendChild(wrap);
       } else {
         const el = document.createElement('div');
         el.className = 'chat-msg ' + side;
         el.innerHTML = bubble;
+        bubbleEl = el;
         body.appendChild(el);
       }
+      if (hasPhoto) {
+        const img = bubbleEl.querySelector('.chat-photo');
+        if (img) { img.src = m.photo; img.onclick = () => { $('photoViewerImg').src = m.photo; $('photoViewer').hidden = false; }; }
+      }
+      attachLongPress(bubbleEl, () => {
+        chatQuote = { text: m.text || '📷 Foto', name: m.from_device === deviceId ? (localStorage.getItem(LS.name) || 'Kamu') : (m.from_name || 'Teman') };
+        showQuoteBar();
+      });
     });
     if (atBottom) scrollChatBottom();
   }
   async function loadChat(scroll) {
     if (!chatPeer) return;
     const peer = chatPeer;
+    const since = chatMsgs.length ? chatMsgs[chatMsgs.length - 1].created_at : 0;
     try {
-      const res = await api('/dm?me=' + encodeURIComponent(deviceId) + '&peer=' + encodeURIComponent(peer));
+      const res = await api('/dm?me=' + encodeURIComponent(deviceId) + '&peer=' + encodeURIComponent(peer) + '&since=' + since);
       if (!res.ok || chatPeer !== peer) return;
       const msgs = await res.json();
       if (chatPeer !== peer) return;
-      renderChat(msgs);
+      if (msgs.length) chatMsgs = chatMsgs.concat(msgs);
+      renderChat(chatMsgs);
       if (scroll) scrollChatBottom();
-      const lastIn = msgs.filter((m) => m.from_device === peer).slice(-1)[0];
+      updateChatDot();
+      const lastIn = chatMsgs.filter((m) => m.from_device === peer).slice(-1)[0];
       if (lastIn) { setChatSeen(peer, lastIn.created_at); updateInboxBadge(); }
     } catch (e) { /* ignore */ }
   }
   function openChat(peer, name) {
     if (!peer || peer === deviceId) return;
     chatPeer = peer;
+    chatMsgs = [];
+    chatQuote = null;
+    hideQuoteBar();
     $('chatPeerName').textContent = name || 'Teman';
     $('chatBody').innerHTML = '<div class="chat-empty">Memuat…</div>';
+    updateChatDot();
     $('chatModal').classList.remove('closing');
     $('chatModal').hidden = false;
     loadChat(true);
     clearInterval(chatTimer);
     chatTimer = setInterval(() => { if (!$('chatModal').hidden) loadChat(false); else { clearInterval(chatTimer); chatTimer = null; } }, 4000);
   }
-  function closeChat() { clearInterval(chatTimer); chatTimer = null; chatPeer = null; animateClose($('chatModal')); }
+  function closeChat() { clearInterval(chatTimer); chatTimer = null; chatPeer = null; chatQuote = null; hideQuoteBar(); animateClose($('chatModal')); }
   async function sendChat() {
     const t = $('chatText').value.trim();
     if (!t || !chatPeer) return;
     $('chatText').value = '';
+    const body = { from_device: deviceId, to_device: chatPeer, from_name: localStorage.getItem(LS.name) || 'Teman', text: t };
+    if (chatQuote) { body.quote_text = chatQuote.text; body.quote_name = chatQuote.name; }
     try {
-      await api('/dm', { method: 'POST', body: JSON.stringify({ from_device: deviceId, to_device: chatPeer, from_name: localStorage.getItem(LS.name) || 'Teman', text: t }) });
+      await api('/dm', { method: 'POST', body: JSON.stringify(body) });
+      chatQuote = null; hideQuoteBar();
       loadChat(true);
     } catch (e) { toast('Gagal mengirim'); $('chatText').value = t; }
+  }
+  async function sendChatPhoto(file) {
+    if (!file || !chatPeer) return;
+    try {
+      let thumb = await resizeImage(file, 900, 0.78);
+      if (thumb.length > 300000) thumb = await shrinkDataUrl(thumb, 700, 0.6);
+      if (!thumb || thumb.length > 300000) { toast('Foto terlalu besar'); return; }
+      await api('/dm', { method: 'POST', body: JSON.stringify({ from_device: deviceId, to_device: chatPeer, from_name: localStorage.getItem(LS.name) || 'Teman', text: '', photo: thumb }) });
+      loadChat(true);
+    } catch (e) { toast('Gagal mengirim foto'); }
   }
 
   // ---------- presence ----------
@@ -844,8 +924,9 @@
       const note = pin.note ? ' · ' + escapeHtml(pin.note) : '';
       const badge = isLive ? '<span class="badge-live">LIVE</span>' : '';
       const ring = pin.color || '#0A84FF';
-      const avatarHtml = pin.avatar
-        ? '<div class="avatar" style="--ring:' + ring + ";background-image:url('" + pin.avatar + "')\"></div>"
+      const avUrl = photoUrl(pin, 'avatar');
+      const avatarHtml = avUrl
+        ? '<div class="avatar" style="--ring:' + ring + ";background-image:url('" + avUrl + "')\"></div>"
         : '<div class="avatar" style="--ring:' + ring + '">' + escapeHtml(pin.emoji || '📍') + '</div>';
       row.innerHTML =
         avatarHtml +
@@ -1191,6 +1272,13 @@
   $('btnChatSend').onclick = sendChat;
   $('chatText').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
   $('chatModal').addEventListener('click', (e) => { if (e.target.id === 'chatModal') closeChat(); });
+  $('btnChatPhoto').onclick = () => $('fileChatPhoto').click();
+  $('fileChatPhoto').addEventListener('change', (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (f) sendChatPhoto(f);
+  });
+  $('btnQuoteCancel').onclick = () => { chatQuote = null; hideQuoteBar(); };
   $('btnHistoryClose').onclick = () => animateClose($('historyModal'));
   $('historyModal').addEventListener('click', (e) => { if (e.target.id === 'historyModal') animateClose($('historyModal')); });
   $('btnReplySend').onclick = () => { const t = $('replyText').value.trim(); if (t) sendStatusDM(t); };

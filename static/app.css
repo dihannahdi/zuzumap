@@ -488,6 +488,15 @@ body.modal-open .sheet, body.modal-open .fab, body.modal-open .livebar { visibil
 .chat-input { flex: none; display: flex; gap: 8px; padding: 10px 12px calc(env(safe-area-inset-bottom) + 12px); border-top: 1px solid var(--hair); }
 .chat-input input { flex: 1; min-width: 0; padding: 12px 14px; font-size: 15px; border-radius: 14px; border: 1px solid var(--hair); background: var(--bg); color: var(--text); }
 .chat-input input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.chat-photo-btn { font-size: 20px; padding: 0 2px; align-self: center; }
+.chat-photo { display: block; width: 210px; max-width: 100%; border-radius: 12px; margin: 2px 0 6px; cursor: pointer; }
+.chat-quote { display: flex; flex-direction: column; gap: 1px; border-left: 3px solid var(--accent); background: rgba(0,0,0,0.06); border-radius: 8px; padding: 5px 8px; font-size: 12.5px; margin-bottom: 5px; }
+.chat-quote b { font-size: 11px; }
+.chat-msg.me .chat-quote { background: rgba(255,255,255,0.18); border-left-color: #fff; }
+.chat-quote-bar { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-top: 1px solid var(--hair); font-size: 13px; color: var(--text-dim); }
+.chat-quote-bar .cq-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-quote-bar b { color: var(--accent); margin-right: 6px; }
+.chat-quote-bar button { font-size: 16px; color: var(--text-dim); }
 .inbox-section { font-size: 12px; font-weight: 700; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin: 14px 4px 4px; }
 .inbox-item .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--danger); vertical-align: middle; margin-left: 4px; }
 

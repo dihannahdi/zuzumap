@@ -1,7 +1,7 @@
 // Kafilah service worker — offline app shell + installability.
 // API calls (/api/*) are never cached; they always hit the network.
 
-const CACHE = 'kafilah-v16';
+const CACHE = 'kafilah-v17';
 const SHELL = [
   '/',
   '/index.html',
